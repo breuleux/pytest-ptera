@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "pytest-ptera"
+version = "0.0.0"
+description = "Use ptera probes in tests"
+authors = ["Olivier Breuleux <breuleux@gmail.com>"]
+license = "MIT"
+classifiers = [
+    "Framework :: Pytest"
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pytest = "^6.2.4"
+ptera = "^0.3.6"
+codefind = "^0.1.2"
+
+[tool.poetry.dev-dependencies]
+black = "^21.7b0"
+isort = "^5.9.3"
+flake8 = "^3.9.2"
+
+[tool.black]
+line-length = 80
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+combine_as_imports = true
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.plugins.pytest11]
+ptera = "pytest_ptera.main"
