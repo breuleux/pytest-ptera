@@ -9,7 +9,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.8"
 pytest = "^6.2.4"
 ptera = "^0.3.6"
 codefind = "^0.1.2"
