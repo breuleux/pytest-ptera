@@ -2,7 +2,6 @@ import sys
 from collections import defaultdict
 
 import pytest
-from ptera import probing
 
 formatting_info = {}
 all_metrics = defaultdict(dict)
@@ -13,9 +12,19 @@ class Reporter:
         self.name = name
         self.item = item
 
-    def status_if_true(self, long, short=None, color="cyan", category=None):
+    def status(
+        self,
+        long,
+        short=None,
+        color="cyan",
+        category=None,
+        condition=lambda x: x is not False,
+    ):
+        done = False
+
         def do(x):
-            if x:
+            nonlocal done
+            if not done and (condition is None or condition(x)):
                 self.item.user_properties.append(
                     (
                         "ptera_status",
@@ -27,6 +36,7 @@ class Reporter:
                         },
                     )
                 )
+                done = True
 
         return do
 
@@ -68,6 +78,8 @@ _cached_probes = {}
 
 
 def make_display_probe(sel):
+    from ptera import probing
+
     pro = probing(sel)
     pro.display()
     return pro
@@ -78,17 +90,17 @@ def resolve_probe(sel):
         return _cached_probes[sel]
 
     elif not isinstance(sel, str):
-        result = {(): (getattr(sel, "__name__", "<probe>"), sel)}
+        result = {(): sel}
 
     elif "." in sel or "/" in sel:
-        result = {(): (sel, lambda _: make_display_probe(sel))}
+        result = {(): lambda _: make_display_probe(sel)}
 
     else:
         result = {}
         for cft in _conftests:
             fn = getattr(cft, f"probe_{sel}", None)
             if fn is not None:
-                result[tuple(cft.__name__.split(".")[:-1])] = (sel, fn)
+                result[tuple(cft.__name__.split(".")[:-1])] = fn
         if not result:
             raise NameError(f"Could not find probe '{sel}'")
 
@@ -103,12 +115,7 @@ def pytest_sessionstart(session):
         for name, mod in sys.modules.items()
         if name.split(".")[-1] == "conftest"
     ]
-    selectors = session.config.option.probe or []
-    probes = []
-    for sel in selectors:
-        probes.append(resolve_probe(sel))
-
-    session.ptera_probes = tuple(probes)
+    session.ptera_probes = tuple(session.config.option.probe or ())
 
 
 def pytest_runtest_setup(item):
@@ -117,14 +124,19 @@ def pytest_runtest_setup(item):
 
     probes = item.session.ptera_probes
     for mark in item.iter_markers(name="useprobes"):
-        probes = probes + tuple(resolve_probe(sel) for sel in mark.args)
+        for arg in mark.args:
+            if isinstance(arg, (list, tuple, set, frozenset)):
+                probes = probes + tuple(arg)
+            else:
+                probes = probes + (arg,)
 
-    for pros in probes:
+    probes = {sel: resolve_probe(sel) for sel in probes}
+
+    for sel, pros in probes.items():
         for i in range(1, len(module_path) + 1):
             pth = tuple(module_path[:-i])
             if pth in pros:
-                sel, pro = pros[pth]
-                active_probes.append(pro(Reporter(sel, item)))
+                active_probes.append(pros[pth](Reporter(sel, item)))
                 break
 
     for pro in active_probes:
