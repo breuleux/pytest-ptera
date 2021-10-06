@@ -57,8 +57,48 @@ def pytest_addoption(parser, pluginmanager):
     )
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "useprobes(*probes): use the specified probes"
+    )
+
+
+_conftests = []
+_cached_probes = {}
+
+
+def make_display_probe(sel):
+    pro = probing(sel)
+    pro.display()
+    return pro
+
+
+def resolve_probe(sel):
+    if sel in _cached_probes:
+        return _cached_probes[sel]
+
+    elif not isinstance(sel, str):
+        result = {(): (getattr(sel, "__name__", "<probe>"), sel)}
+
+    elif "." in sel or "/" in sel:
+        result = {(): (sel, lambda _: make_display_probe(sel))}
+
+    else:
+        result = {}
+        for cft in _conftests:
+            fn = getattr(cft, f"probe_{sel}", None)
+            if fn is not None:
+                result[tuple(cft.__name__.split(".")[:-1])] = (sel, fn)
+        if not result:
+            raise NameError(f"Could not find probe '{sel}'")
+
+    _cached_probes[sel] = result
+    return result
+
+
 def pytest_sessionstart(session):
-    conftests = [
+    global _conftests
+    _conftests = [
         mod
         for name, mod in sys.modules.items()
         if name.split(".")[-1] == "conftest"
@@ -66,29 +106,20 @@ def pytest_sessionstart(session):
     selectors = session.config.option.probe or []
     probes = []
     for sel in selectors:
+        probes.append(resolve_probe(sel))
 
-        if "." in sel or "/" in sel:
-            pro = probing(sel)
-            pro.subscribe(print)
-            probes.append({(): (sel, lambda _: pro)})
-
-        else:
-            pros = {}
-            for cft in conftests:
-                fn = getattr(cft, f"probe_{sel}", None)
-                if fn is not None:
-                    pros[tuple(cft.__name__.split(".")[:-1])] = (sel, fn)
-            if not pros:
-                raise NameError(f"Could not find probe '{sel}'")
-            probes.append(pros)
-
-    session.ptera_probes = probes
+    session.ptera_probes = tuple(probes)
 
 
 def pytest_runtest_setup(item):
     module_path = item.module.__name__.split(".")
     active_probes = []
-    for pros in item.session.ptera_probes:
+
+    probes = item.session.ptera_probes
+    for mark in item.iter_markers(name="useprobes"):
+        probes = probes + tuple(resolve_probe(sel) for sel in mark.args)
+
+    for pros in probes:
         for i in range(1, len(module_path) + 1):
             pth = tuple(module_path[:-i])
             if pth in pros:
