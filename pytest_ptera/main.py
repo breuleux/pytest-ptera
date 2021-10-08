@@ -1,16 +1,47 @@
 import sys
 from collections import defaultdict
+from itertools import chain
 
 import pytest
+from giving import SourceProxy
 
 formatting_info = {}
 all_metrics = defaultdict(dict)
+summaries = {}
+
+
+class Summary:
+    def __init__(self):
+        self._header = []
+        self._lines = []
+        self._footer = []
+
+    def header(self, *lines):
+        self._header += lines
+
+    def log(self, *lines):
+        self._lines += lines
+
+    def footer(self, *lines):
+        self._footer += lines
+
+    def dump(self):
+        for line in chain(self._header, self._lines, self._footer):
+            print(line)
+
+
+def require_summary(metrics, summary_function):
+    if summary_function not in summaries:
+        summary = Summary()
+        summary_function(metrics, summary)
+        summaries[summary_function] = summary
 
 
 class Reporter:
     def __init__(self, name, item):
         self.name = name
         self.item = item
+        self.metrics_stream = self.item.session.metrics_stream
 
     def status(
         self,
@@ -40,21 +71,27 @@ class Reporter:
 
         return do
 
-    def metric(self, *, name=None, sort=None, format=None):
+    def metric(self, name=None):
         def do(value):
-            self.item.user_properties.append(
-                (
-                    "ptera_metric",
-                    {
-                        "name": name or self.name,
-                        "value": value,
-                        "sort": sort,
-                        "format": format,
-                    },
-                )
-            )
+            if name is None:
+                assert isinstance(value, dict) and len(value) == 1
+                (metric, value), = value.items()
+            else:
+                metric = name
+
+            if self.metrics_stream:
+                filename, _, testname = self.item.location
+                self.metrics_stream._push({
+                    "metric": metric,
+                    "value": value,
+                    "location": f"{filename}::{testname}",
+                })
 
         return do
+
+    def require_summaries(self, *summaries):
+        for s in summaries:
+            require_summary(self.metrics_stream, s)
 
 
 def pytest_addoption(parser, pluginmanager):
@@ -116,6 +153,8 @@ def pytest_sessionstart(session):
         if name.split(".")[-1] == "conftest"
     ]
     session.ptera_probes = tuple(session.config.option.probe or ())
+    session.metrics_stream = SourceProxy()
+    session.metrics_stream.__enter__()
 
 
 def pytest_runtest_setup(item):
@@ -155,12 +194,6 @@ def pytest_runtest_call(item):
 def pytest_report_teststatus(report, config):
     if report.when == "call":
         for name, value, *_ in report.user_properties:
-            if name == "ptera_metric":
-                name = value["name"]
-                all_metrics[name][report.location] = value["value"]
-                formatting_info[name] = value
-
-        for name, value, *_ in report.user_properties:
             if name == "ptera_status":
                 return (
                     value["category"],
@@ -169,25 +202,10 @@ def pytest_report_teststatus(report, config):
                 )
 
 
+def pytest_sessionfinish(session, exitstatus):
+    session.metrics_stream.__exit__(None, None, None)
+
+
 def pytest_terminal_summary():
-    for name, results in all_metrics.items():
-        header = f"Results for probe '{name}'"
-        print()
-        print("=" * len(header))
-        print(header)
-        print("=" * len(header))
-        info = formatting_info.get(name, None)
-        results = [
-            (f"{filename}::{test_name}", res)
-            for (filename, _, test_name), res in results.items()
-        ]
-        if info["sort"] == "desc":
-            results.sort(key=(lambda x: x[1]), reverse=True)
-        elif info["sort"] == "asc":
-            results.sort(key=(lambda x: x[1]))
-        pad = max([len(loc) for loc, _ in results]) + 2
-        format = info.get("format", None)
-        for loc, result in results:
-            if format:
-                result = format.format(result)
-            print(loc.ljust(pad), result)
+    for summ in summaries.values():
+        summ.dump()

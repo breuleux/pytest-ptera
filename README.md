@@ -109,18 +109,45 @@ def test_bisect_unordered():
     bisect([1, 6, 30, 7], 18)
 ```
 
-Note that this is compatible with the `--pdb` flag, so you can easily debug offending test cases.
+Note: if you have a direct handle to `probe_ordered`, you can pass it by reference instead of by name with `pytest.mark.useprobes([probe_ordered])`, but don't forget to put it in a list, otherwise `mark` thinks it is the test function to decorate.
+
+Note 2: this is compatible with the `--pdb` flag, so you can easily debug offending test cases.
 
 
-### Metrics
+### Summaries
 
-You can use a probe to define metrics that will be summarized at the end, for instance counting the number of times `elem` is set for each test:
+You can use a probe to define metrics that will be summarized at the end:
 
+* Define a function for the summary that takes `metrics`, a stream of metrics (same interface as `probing`), and a `summary` object.
+* Define a probe that:
+  * Activates the summary function with `reporter.require_summaries`
+  * Logs a metric with `reporter.metric`.
+
+The metrics are a stream of dictionaries like `{"metric": name, "value": value, "location": test_location_string}`.
+
+For instance let's say we want to count the number of times `elem` is set for each test, order in descending order, and display the top 10:
 
 ```python
+def summary_countelem(metrics, summary):
+    summary.header(
+        "=============================",
+        "Results for probe 'countelem'",
+        "=============================",
+    )
+    summary.footer(
+        "=============================",
+    )
+    metrics \
+        .where(metric="countelem") \
+        .top(n=10, key=lambda entry: entry["value"]) \
+        .format("{location:50} {value:>10}") \
+        >> summary.log
+
 def probe_countelem(reporter):
+    reporter.require_summaries(summary_countelem)
+
     prb = probing("/my_project.bisect/bisect > elem")["elem"].count()
-    prb >> reporter.metric(sort="desc", format="{:10}")
+    prb >> reporter.metric("countelem")
     return prb
 ```
 
@@ -141,3 +168,56 @@ tests/test_bisect.py::test_bisect            7
 
 ============================ 1 passed in 0.29s ============================
 ```
+
+
+### Custom status
+
+Lastly, a probe can set a custom status for the result of a test, which lets you see at a glance which tests trigger certain conditions. For example:
+
+```python
+# in conftest.py
+
+def probe_countelem2(reporter):
+    prb = probing("/my_project.bisect/bisect > elem")
+    prb = prb["elem"].count().some(lambda x: x > 5)
+    prb >> reporter.status("WOW", short="!", color="red", category="surprises")
+    return prb
+
+
+# in test_bisect.py
+
+def test_1():
+    assert bisect(list(range(1, 10)), 7) == 7
+
+def test_2():
+    assert bisect(list(range(1, 100)), 7) == 7
+```
+
+```
+$ pytest tests/test_bisect.py --probe countelem2
+================================== test session starts ===================================
+platform darwin -- Python 3.9.5, pytest-6.2.5, py-1.10.0, pluggy-1.0.0
+rootdir: /Users/olivier/code/pytest-ptera
+plugins: ptera-0.1.1, breakword-0.1.0
+collected 2 items
+
+tests/test_bisect.py .!                                                            [100%]
+
+============================= 1 passed, 1 surprises in 0.19s ============================
+```
+
+All arguments to `reporter.status` are optional save for the first.
+
+
+## Suggestions
+
+```python
+
+def probe_call_myf():
+    """Give status YES to any test that calls myf() (and gets a result)."""
+    probe = probing("/my_package/myf() as value")
+    probe.some() >> reporter.status("YES", short="!", color="red")
+    return probe
+
+```
+
