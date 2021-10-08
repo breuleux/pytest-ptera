@@ -118,10 +118,9 @@ Note 2: this is compatible with the `--pdb` flag, so you can easily debug offend
 
 You can use a probe to define metrics that will be summarized at the end:
 
-* Define a function for the summary that takes `metrics`, a stream of metrics (same interface as `probing`), and a `summary` object.
-* Define a probe that:
-  * Activates the summary function with `reporter.require_summaries`
-  * Logs a metric with `reporter.metric`.
+* Define both `summary_xyz` and `probe_xyz`.
+* `summary_xyz` takes the metrics stream and a Summary object.
+* `probe_xyz` sets metrics for each test with `reporter.metric`.
 
 The metrics are a stream of dictionaries like `{"metric": name, "value": value, "location": test_location_string}`.
 
@@ -144,8 +143,6 @@ def summary_countelem(metrics, summary):
         >> summary.log
 
 def probe_countelem(reporter):
-    reporter.require_summaries(summary_countelem)
-
     prb = probing("/my_project.bisect/bisect > elem")["elem"].count()
     prb >> reporter.metric("countelem")
     return prb

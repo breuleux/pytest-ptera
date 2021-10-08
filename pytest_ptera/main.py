@@ -4,7 +4,7 @@ from functools import partial
 from itertools import chain
 
 import pytest
-from giving import SourceProxy
+from giving import ObservableProxy, SourceProxy
 
 _conftests = []
 _summaries = {}
@@ -91,10 +91,6 @@ class Reporter:
 
         return do
 
-    def require_summaries(self, *summaries):
-        for s in summaries:
-            require_summary(self.metrics_stream, s)
-
 
 def pytest_addoption(parser, pluginmanager):
     parser.addoption(
@@ -141,14 +137,12 @@ class FunctionFinder:
         self.cache[sel] = result
         return result
 
-    def resolve(self, sel, module_path, must_exist=True):
+    def resolve(self, sel, module_path):
         pros = self.find(sel)
         for i in range(1, len(module_path) + 1):
             pth = tuple(module_path[:-i])
             if pth in pros:
                 return pros[pth]
-        if must_exist:
-            raise NameError(f"Could not find {self.prefix} '{sel}'")
 
 
 def make_display_probe(sel):
@@ -160,6 +154,7 @@ def make_display_probe(sel):
 
 
 _probe_finder = FunctionFinder(prefix="probe", default=make_display_probe)
+_summary_finder = FunctionFinder(prefix="summary", default=None)
 
 
 def pytest_sessionstart(session):
@@ -188,10 +183,21 @@ def pytest_runtest_setup(item):
 
     selectors = list({sel: None for sel in selectors}.keys())
 
-    active_probes = [
-        _probe_finder.resolve(sel, module_path)(Reporter(sel, item))
-        for sel in selectors
-    ]
+    active_probes = []
+    for sel in selectors:
+        probe_fn = _probe_finder.resolve(sel, module_path)
+        summary_fn = _summary_finder.resolve(sel, module_path)
+        if not probe_fn and not summary_fn:
+            raise NameError(f"Could not find probe '{sel}'")
+        if summary_fn:
+            require_summary(item.session.metrics_stream, summary_fn)
+        if probe_fn:
+            probe = probe_fn(Reporter(sel, item))
+            if not isinstance(probe, ObservableProxy):
+                raise TypeError(
+                    "Probe function should return an instance of probing()"
+                )
+            active_probes.append(probe)
 
     for pro in active_probes:
         pro.__enter__()
