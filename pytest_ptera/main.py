@@ -1,13 +1,13 @@
 import sys
 from collections import defaultdict
+from functools import partial
 from itertools import chain
 
 import pytest
 from giving import SourceProxy
 
-formatting_info = {}
-all_metrics = defaultdict(dict)
-summaries = {}
+_conftests = []
+_summaries = {}
 
 
 class Summary:
@@ -31,10 +31,10 @@ class Summary:
 
 
 def require_summary(metrics, summary_function):
-    if summary_function not in summaries:
+    if summary_function not in _summaries:
         summary = Summary()
         summary_function(metrics, summary)
-        summaries[summary_function] = summary
+        _summaries[summary_function] = summary
 
 
 class Reporter:
@@ -75,17 +75,19 @@ class Reporter:
         def do(value):
             if name is None:
                 assert isinstance(value, dict) and len(value) == 1
-                (metric, value), = value.items()
+                ((metric, value),) = value.items()
             else:
                 metric = name
 
             if self.metrics_stream:
                 filename, _, testname = self.item.location
-                self.metrics_stream._push({
-                    "metric": metric,
-                    "value": value,
-                    "location": f"{filename}::{testname}",
-                })
+                self.metrics_stream._push(
+                    {
+                        "metric": metric,
+                        "value": value,
+                        "location": f"{filename}::{testname}",
+                    }
+                )
 
         return do
 
@@ -110,8 +112,43 @@ def pytest_configure(config):
     )
 
 
-_conftests = []
-_cached_probes = {}
+class FunctionFinder:
+    def __init__(self, prefix, default=None):
+        self.prefix = prefix
+        self.default = default
+        self.cache = {}
+
+    def find(self, sel):
+        if sel in self.cache:
+            return self.cache[sel]
+
+        elif not isinstance(sel, str):
+            result = {(): sel}
+
+        elif "." in sel or "/" in sel:
+            if self.default is None:
+                result = {}
+            else:
+                result = {(): partial(self.default, sel)}
+
+        else:
+            result = {}
+            for cft in _conftests:
+                fn = getattr(cft, f"{self.prefix}_{sel}", None)
+                if fn is not None:
+                    result[tuple(cft.__name__.split(".")[:-1])] = fn
+
+        self.cache[sel] = result
+        return result
+
+    def resolve(self, sel, module_path, must_exist=True):
+        pros = self.find(sel)
+        for i in range(1, len(module_path) + 1):
+            pth = tuple(module_path[:-i])
+            if pth in pros:
+                return pros[pth]
+        if must_exist:
+            raise NameError(f"Could not find {self.prefix} '{sel}'")
 
 
 def make_display_probe(sel):
@@ -122,27 +159,7 @@ def make_display_probe(sel):
     return pro
 
 
-def resolve_probe(sel):
-    if sel in _cached_probes:
-        return _cached_probes[sel]
-
-    elif not isinstance(sel, str):
-        result = {(): sel}
-
-    elif "." in sel or "/" in sel:
-        result = {(): lambda _: make_display_probe(sel)}
-
-    else:
-        result = {}
-        for cft in _conftests:
-            fn = getattr(cft, f"probe_{sel}", None)
-            if fn is not None:
-                result[tuple(cft.__name__.split(".")[:-1])] = fn
-        if not result:
-            raise NameError(f"Could not find probe '{sel}'")
-
-    _cached_probes[sel] = result
-    return result
+_probe_finder = FunctionFinder(prefix="probe", default=make_display_probe)
 
 
 def pytest_sessionstart(session):
@@ -161,22 +178,20 @@ def pytest_runtest_setup(item):
     module_path = item.module.__name__.split(".")
     active_probes = []
 
-    probes = item.session.ptera_probes
+    selectors = item.session.ptera_probes
     for mark in item.iter_markers(name="useprobes"):
         for arg in mark.args:
             if isinstance(arg, (list, tuple, set, frozenset)):
-                probes = probes + tuple(arg)
+                selectors = selectors + tuple(arg)
             else:
-                probes = probes + (arg,)
+                selectors = selectors + (arg,)
 
-    probes = {sel: resolve_probe(sel) for sel in probes}
+    selectors = list({sel: None for sel in selectors}.keys())
 
-    for sel, pros in probes.items():
-        for i in range(1, len(module_path) + 1):
-            pth = tuple(module_path[:-i])
-            if pth in pros:
-                active_probes.append(pros[pth](Reporter(sel, item)))
-                break
+    active_probes = [
+        _probe_finder.resolve(sel, module_path)(Reporter(sel, item))
+        for sel in selectors
+    ]
 
     for pro in active_probes:
         pro.__enter__()
@@ -207,5 +222,5 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_terminal_summary():
-    for summ in summaries.values():
+    for summ in _summaries.values():
         summ.dump()
