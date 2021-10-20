@@ -11,7 +11,7 @@ classifiers = [
 [tool.poetry.dependencies]
 python = "^3.8"
 pytest = "^6.2.4"
-ptera = "^0.4.0"
+ptera = "^0.4.1"
 
 [tool.poetry.dev-dependencies]
 black = "^21.7b0"

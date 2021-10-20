@@ -138,8 +138,8 @@ def summary_countelem(metrics, summary):
     )
     metrics \
         .where(metric="countelem") \
-        .top(n=10, key=lambda entry: entry["value"]) \
-        .format("{location:50} {value:>10}") \
+        .top(n=10, key="value") \
+        .format("{location:70} {value:>10}") \
         >> summary.log
 
 def probe_countelem(reporter):
@@ -217,4 +217,3 @@ def probe_call_myf():
     return probe
 
 ```
-
