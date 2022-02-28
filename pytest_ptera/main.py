@@ -1,10 +1,11 @@
 import sys
-from collections import defaultdict
+import warnings
 from functools import partial
 from itertools import chain
 
 import pytest
 from giving import ObservableProxy, SourceProxy
+from rx.internal.exceptions import SequenceContainsNoElementsError
 
 _conftests = []
 _summaries = {}
@@ -41,7 +42,7 @@ class Reporter:
     def __init__(self, name, item):
         self.name = name
         self.item = item
-        self.metrics_stream = self.item.session.metrics_stream
+        self.broadcast_stream = self.item.session.broadcast_stream
 
     def status(
         self,
@@ -71,7 +72,7 @@ class Reporter:
 
         return do
 
-    def metric(self, name=None):
+    def broadcast(self, name=None):
         def do(value):
             if name is None:
                 assert isinstance(value, dict) and len(value) == 1
@@ -79,12 +80,11 @@ class Reporter:
             else:
                 metric = name
 
-            if self.metrics_stream:
+            if self.broadcast_stream:
                 filename, _, testname = self.item.location
-                self.metrics_stream._push(
+                self.broadcast_stream._push(
                     {
-                        "metric": metric,
-                        "value": value,
+                        metric: value,
                         "location": f"{filename}::{testname}",
                     }
                 )
@@ -127,6 +127,11 @@ class FunctionFinder:
             else:
                 result = {(): partial(self.default, sel)}
 
+        elif "," in sel:
+            result = {}
+            for sel in sel.split(","):
+                result.update(self.find(sel))
+
         else:
             result = {}
             for cft in _conftests:
@@ -165,8 +170,8 @@ def pytest_sessionstart(session):
         if name.split(".")[-1] == "conftest"
     ]
     session.ptera_probes = tuple(session.config.option.probe or ())
-    session.metrics_stream = SourceProxy()
-    session.metrics_stream.__enter__()
+    session.broadcast_stream = SourceProxy()
+    session.broadcast_stream.__enter__()
 
 
 def pytest_runtest_setup(item):
@@ -190,13 +195,11 @@ def pytest_runtest_setup(item):
         if not probe_fn and not summary_fn:
             raise NameError(f"Could not find probe '{sel}'")
         if summary_fn:
-            require_summary(item.session.metrics_stream, summary_fn)
+            require_summary(item.session.broadcast_stream, summary_fn)
         if probe_fn:
             probe = probe_fn(Reporter(sel, item))
             if not isinstance(probe, ObservableProxy):
-                raise TypeError(
-                    "Probe function should return an instance of probing()"
-                )
+                raise TypeError("Probe function should return a Probe instance")
             active_probes.append(probe)
 
     for pro in active_probes:
@@ -209,7 +212,10 @@ def pytest_runtest_setup(item):
 def pytest_runtest_call(item):
     yield
     for pro in item._ptera_probes:
-        pro.__exit__(None, None, None)
+        try:
+            pro.__exit__(None, None, None)
+        except SequenceContainsNoElementsError:
+            warnings.warn("A probe attempted a reduction with no elements")
 
 
 def pytest_report_teststatus(report, config):
@@ -224,7 +230,7 @@ def pytest_report_teststatus(report, config):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    session.metrics_stream.__exit__(None, None, None)
+    session.broadcast_stream.__exit__(None, None, None)
 
 
 def pytest_terminal_summary():
