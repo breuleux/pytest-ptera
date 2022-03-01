@@ -1,14 +1,24 @@
+import inspect
+import shutil
 import sys
 import warnings
+from contextlib import contextmanager
 from functools import partial
 from itertools import chain
 
 import pytest
-from giving import ObservableProxy, SourceProxy
+from giving import SourceProxy
+from ptera.utils import Named
 from rx.internal.exceptions import SequenceContainsNoElementsError
 
 _conftests = []
 _summaries = {}
+
+
+_terminal_width = shutil.get_terminal_size((80, 20)).columns
+
+
+NO_ARGUMENT = Named("NO_ARGUMENT")
 
 
 class Summary:
@@ -17,11 +27,31 @@ class Summary:
         self._lines = []
         self._footer = []
 
+    def title(self, title):
+        self.header(
+            "~" * _terminal_width,
+            title,
+            "~" * _terminal_width,
+        )
+        self.footer("~" * _terminal_width)
+
     def header(self, *lines):
         self._header += lines
 
     def log(self, *lines):
-        self._lines += lines
+        for line in lines:
+            self._log(line)
+
+    def _log(self, line):
+        if isinstance(line, dict):
+            if len(line) == 2 and "location" in line:
+                d = dict(line)
+                item = d.pop("location")
+                (value,) = d.values()
+                value = str(value)
+                padding = _terminal_width - len(value)
+                line = f"{item:{padding}}{value}"
+        self._lines.append(line)
 
     def footer(self, *lines):
         self._footer += lines
@@ -32,10 +62,16 @@ class Summary:
 
 
 def require_summary(metrics, summary_function):
+    key = summary_function
     if summary_function not in _summaries:
+        if inspect.isgeneratorfunction(summary_function):
+            summary_function = contextmanager(summary_function)
         summary = Summary()
-        summary_function(metrics, summary)
-        _summaries[summary_function] = summary
+        rval = summary_function(metrics, summary)
+        if hasattr(rval, "__enter__"):
+            rval.__enter__()
+            summary._exit = rval
+        _summaries[key] = summary
 
 
 class Reporter:
@@ -43,6 +79,25 @@ class Reporter:
         self.name = name
         self.item = item
         self.broadcast_stream = self.item.session.broadcast_stream
+
+    def set_status(
+        self,
+        long,
+        short=None,
+        color="cyan",
+        category=None,
+    ):
+        self.item.user_properties.append(
+            (
+                "ptera_status",
+                {
+                    "category": category or long.lower(),
+                    "long": long,
+                    "short": short or long[0],
+                    "color": color,
+                },
+            )
+        )
 
     def status(
         self,
@@ -57,28 +112,20 @@ class Reporter:
         def do(x):
             nonlocal done
             if not done and (condition is None or condition(x)):
-                self.item.user_properties.append(
-                    (
-                        "ptera_status",
-                        {
-                            "category": category or long.lower(),
-                            "long": long,
-                            "short": short or long[0],
-                            "color": color,
-                        },
-                    )
+                self.set_status(
+                    long=long, short=short, color=color, category=category
                 )
                 done = True
 
         return do
 
-    def broadcast(self, name=None):
+    def broadcast(self, key=None, **data):
         def do(value):
-            if name is None:
+            if key is None:
                 assert isinstance(value, dict) and len(value) == 1
                 ((metric, value),) = value.items()
             else:
-                metric = name
+                metric = key
 
             if self.broadcast_stream:
                 filename, _, testname = self.item.location
@@ -89,7 +136,17 @@ class Reporter:
                     }
                 )
 
-        return do
+        if key and not isinstance(key, str):
+            raise TypeError("key argument should be a string")
+
+        if data:
+            if key is not None:
+                raise TypeError(
+                    "key should not be provided along with keyword arguments"
+                )
+            do(data)
+        else:
+            return do
 
 
 def pytest_addoption(parser, pluginmanager):
@@ -197,9 +254,13 @@ def pytest_runtest_setup(item):
         if summary_fn:
             require_summary(item.session.broadcast_stream, summary_fn)
         if probe_fn:
+            if inspect.isgeneratorfunction(probe_fn):
+                probe_fn = contextmanager(probe_fn)
             probe = probe_fn(Reporter(sel, item))
-            if not isinstance(probe, ObservableProxy):
-                raise TypeError("Probe function should return a Probe instance")
+            if not hasattr(probe, "__enter__"):
+                raise TypeError(
+                    "Probe function should be a generator or context manager"
+                )
             active_probes.append(probe)
 
     for pro in active_probes:
@@ -235,4 +296,6 @@ def pytest_sessionfinish(session, exitstatus):
 
 def pytest_terminal_summary():
     for summ in _summaries.values():
+        if getattr(summ, "_exit", None):
+            summ._exit.__exit__(None, None, None)
         summ.dump()
