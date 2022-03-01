@@ -207,7 +207,7 @@ class FunctionFinder:
                 return pros[pth]
 
 
-def make_display_probe(sel):
+def make_display_probe(sel, reporter):
     from ptera import probing
 
     pro = probing(sel)
