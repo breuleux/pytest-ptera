@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pytest-ptera"
-version = "0.2.0"
+version = "0.3.0"
 description = "Use ptera probes in tests"
 authors = ["Olivier Breuleux <breuleux@gmail.com>"]
 license = "MIT"
